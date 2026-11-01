@@ -32,8 +32,8 @@
 
 #define COL_BG       0x101318
 #define COL_FG       0xEAEFF5
-#define COL_CURSOR   "#E37B66"
-#define COL_CURSOR_RGB 0xE37B66
+#define COL_CURSOR   "#EAEFF5"
+#define COL_CURSOR_RGB 0xEAEFF5
 #define COL_BLACK    0x222733
 #define COL_RED      0xE37B66
 #define COL_GREEN    0x8DA882
@@ -42,6 +42,15 @@
 #define COL_WHITE    0xC6CED8
 #define COL_LBLACK   0x98A0AE
 #define COL_LWHITE   0xEAEFF5
+#define COL_TILE     0x1E2125
+#define COL_SEL      0x343B43
+#define COL_TRACK_SEL 0x4A525D
+#define COL_RULE     0x2D323A
+#define COL_ACCENT   0x9DB8B9
+#define COL_MARK     0x6FB0B5
+#define COL_POP      0x0A0C0F
+#define COL_FIELD    0x15181D
+#define COL_KEYCAP   0x050608
 
 #define MAX_NETS 256
 #define NAME_MAX_LEN 64
@@ -1547,9 +1556,42 @@ static void put_centered(int y, uintattr_t fg, uintattr_t bg, const char *s, int
     put((tb_width() - w) / 2, y, fg, bg, s, w);
 }
 
+static int draw_hint(int x, int y, int maxw, const char *hint, uintattr_t bg)
+{
+    int used = 0;
+    while (*hint && used < maxw) {
+        const char *sp = strchr(hint, ' ');
+        char key[24], label[64];
+        int kl = sp ? (int)(sp - hint) : (int)strlen(hint);
+        if (kl >= (int)sizeof key) kl = (int)sizeof key - 1;
+        memcpy(key, hint, (size_t)kl);
+        key[kl] = 0;
+        hint += kl;
+        while (*hint == ' ') hint++;
+        const char *end = strstr(hint, "   ");
+        int ll = end ? (int)(end - hint) : (int)strlen(hint);
+        if (ll >= (int)sizeof label) ll = (int)sizeof label - 1;
+        memcpy(label, hint, (size_t)ll);
+        label[ll] = 0;
+        hint += ll;
+        while (*hint == ' ') hint++;
+        if (!kl && !ll) break;
+
+        uintattr_t kfg = COL_LWHITE | TB_BOLD;
+        used += put(x + used, y, kfg, COL_KEYCAP, " ", maxw - used);
+        used += put(x + used, y, kfg, COL_KEYCAP, key, maxw - used);
+        used += put(x + used, y, kfg, COL_KEYCAP, " ", maxw - used);
+        used += put(x + used, y, COL_LBLACK, bg, " ", maxw - used);
+        used += put(x + used, y, COL_LBLACK, bg, label, maxw - used);
+        used += put(x + used, y, COL_LBLACK, bg, "  ", maxw - used);
+    }
+    return used;
+}
+
 static void draw_modal(const char *title, const char *label, const char *hint,
                        const char *text, int mask, uintattr_t label_fg)
 {
+    (void)label_fg;
     int W = tb_width(), H = tb_height();
     int bw = W < 54 ? W - 2 : 52;
     if (bw < 16) bw = W;
@@ -1560,17 +1602,15 @@ static void draw_modal(const char *title, const char *label, const char *hint,
     int bx = (W - bw) / 2, by = (H - bh) / 2;
     if (by < 0) by = 0;
 
-    for (int y = 0; y < bh; y++) fill(bx, by + y, bw, COL_FG, COL_BLACK);
-    put(bx + pad, by + 1, COL_LWHITE | TB_BOLD, COL_BLACK, title, inner);
-    int hw = text_width(hint);
-    if (hw > inner) hw = inner;
-    put(bx + (bw - hw) / 2, by + bh - 2, COL_LBLACK, COL_BLACK, hint, hw);
+    for (int y = 0; y < bh; y++) fill(bx, by + y, bw, COL_FG, COL_POP);
+    put(bx + pad, by + 1, COL_LWHITE | TB_BOLD, COL_POP, title, inner);
+    draw_hint(bx + pad, by + bh - 2, inner, hint, COL_POP);
 
     if (text) {
         int ly = by + 2;
-        if (label) put(bx + pad, ly, label_fg, COL_BLACK, label, inner);
+        if (label) put(bx + pad, ly, COL_LBLACK, COL_POP, label, inner);
 
-        for (int y = 1; y <= 3; y++) fill(bx + pad, ly + y, inner, COL_FG, COL_BG);
+        for (int y = 1; y <= 3; y++) fill(bx + pad, ly + y, inner, COL_FG, COL_FIELD);
         int fy = ly + 2, fx = bx + pad + 2, fw = inner - 4;
         int x = fx;
         if (mask && !reveal) {
@@ -1578,9 +1618,9 @@ static void draw_modal(const char *title, const char *label, const char *hint,
             for (int i = 0; i < input_len; i++)
                 if ((input[i] & 0xC0) != 0x80) n++;
             if (n > fw) n = fw;
-            for (int i = 0; i < n; i++) put(x++, fy, COL_FG, COL_BG, "•", 1);
+            for (int i = 0; i < n; i++) put(x++, fy, COL_FG, COL_FIELD, "•", 1);
         } else {
-            x += put(x, fy, COL_FG, COL_BG, tail_fit(text, fw), fw);
+            x += put(x, fy, COL_FG, COL_FIELD, tail_fit(text, fw), fw);
         }
         tb_set_cursor(x, fy);
     } else {
@@ -1593,26 +1633,54 @@ static int qr_dark(int x, int y)
     return x >= 0 && y >= 0 && x < qr_n && y < qr_n && qr_m[y][x];
 }
 
+static double qr_stretch(void)
+{
+    const char *e = getenv("IWTUI_QR_STRETCH");
+    double f = 1.0;
+    if (e && *e) {
+        f = atof(e);
+    } else {
+        struct winsize ws;
+        if ((ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 || ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) == 0) &&
+            ws.ws_xpixel && ws.ws_ypixel && ws.ws_col && ws.ws_row) {
+            double cwid = (double)ws.ws_xpixel / ws.ws_col;
+            double chei = (double)ws.ws_ypixel / ws.ws_row;
+            f = chei / (2 * cwid);
+        }
+    }
+    if (f < 1.0) f = 1.0;
+    if (f > 2.0) f = 2.0;
+    return f;
+}
+
 static void draw_qr(int top, int avail)
 {
     int W = tb_width();
-    int q = 3, total = qr_n + 2 * q, prow = (total + 1) / 2;
-    if (prow > avail || total > W) {
+    double f = qr_stretch();
+    int q = 3, total = qr_n + 2 * q, prow = (total + 1) / 2, cols = (int)(total * f + 0.999);
+    if (prow > avail || cols > W) {
         q = 2;
         total = qr_n + 2 * q;
         prow = (total + 1) / 2;
+        cols = (int)(total * f + 0.999);
     }
-    if (prow > avail || total > W) {
+    if (prow > avail || cols > W) {
+        f = 1.0;
+        cols = total;
+    }
+    if (prow > avail || cols > W) {
         char msg[96];
-        snprintf(msg, sizeof msg, "terminal too small for the QR code (need %dx%d)", total, prow + 2);
-        put_centered(top + avail / 2, COL_RED, COL_BG, msg, W - 2);
+        snprintf(msg, sizeof msg, "terminal too small for the QR code (need %dx%d)", cols, prow + 2);
+        put_centered(top + avail / 2, COL_ACCENT, COL_BG, msg, W - 2);
         return;
     }
-    int x0 = (W - total) / 2, y0 = top + (avail - prow) / 2;
+    int x0 = (W - cols) / 2, y0 = top + (avail - prow) / 2;
     for (int r = 0; r < prow; r++)
-        for (int c = 0; c < total; c++) {
-            uintattr_t up = qr_dark(c - q, 2 * r - q) ? COL_BG : COL_LWHITE;
-            uintattr_t dn = qr_dark(c - q, 2 * r + 1 - q) ? COL_BG : COL_LWHITE;
+        for (int c = 0; c < cols; c++) {
+            int m = (int)((c + 0.5) / f);
+            if (m >= total) m = total - 1;
+            uintattr_t up = qr_dark(m - q, 2 * r - q) ? COL_BG : COL_LWHITE;
+            uintattr_t dn = qr_dark(m - q, 2 * r + 1 - q) ? COL_BG : COL_LWHITE;
             tb_set_cell(x0 + c, y0 + r, 0x2580, up, dn);
         }
 }
@@ -1633,19 +1701,13 @@ static void draw(void)
     tb_clear();
     tb_hide_cursor();
 
-    int mx = W >= 40 ? 3 : 1;
+    int mx = W >= 40 ? 2 : 1;
     int cw = W - 2 * mx;
-    if (cw > MAX_CONTENT_W) {
-        mx += (cw - MAX_CONTENT_W) / 2;
-        cw = MAX_CONTENT_W;
-    }
     if (cw < 1) cw = 1;
     int xr = mx + cw;
 
     if (mode != MODE_QR) {
-        int x = mx;
-        x += put(x, 1, COL_LWHITE | TB_BOLD, COL_BG, "Wi-Fi", cw);
-        if (device[0]) put(x + 2, 1, COL_LBLACK, COL_BG, device, cw - (x - mx) - 2);
+        for (int y = 1; y <= H - 3; y++) fill(mx - 1, y, cw + 2, COL_FG, COL_TILE);
 
         int is_scanning = !strcmp(scanning, "yes");
         char right[40] = "";
@@ -1660,24 +1722,45 @@ static void draw(void)
         } else if (nnets) {
             snprintf(right, sizeof right, "%d network%s", nnets, nnets == 1 ? "" : "s");
         }
+
+        put(mx, 2, COL_MARK, COL_TILE, "■", 1);
+        put(mx + 2, 2, COL_LWHITE | TB_BOLD, COL_TILE, "wi-fi", cw);
+        int nx = mx + 2 + 5;
         int rw = text_width(right);
-        if (rw && rw + 16 < cw) put(xr - rw, 1, rfg, COL_BG, right, rw);
+        int dw = device[0] ? text_width(device) : 0;
+        int total = (dw && rw) ? dw + 3 + rw : dw + rw;
+        if (total && nx + 2 + total > xr) {
+            dw = 0;
+            total = rw;
+            if (nx + 2 + total > xr) total = rw = 0;
+        }
+        int ix = xr - total;
+        if (total) {
+            int cx = ix;
+            if (dw) {
+                cx += put(cx, 2, COL_LBLACK, COL_TILE, device, dw);
+                if (rw) cx += put(cx, 2, COL_LBLACK, COL_TILE, " · ", 3);
+            }
+            if (rw) put(cx, 2, rfg, COL_TILE, right, rw);
+        }
+        for (int x = nx + 1; x < (total ? ix - 1 : xr); x++) put(x, 2, COL_RULE, COL_TILE, "─", 1);
     }
 
-    int top = 3, rows = H - top - 2;
+    int top = 4, rows = H - 7;
     if (rows < 1) rows = 1;
     list_rows = rows;
 
     if (mode == MODE_QR) {
         draw_qr(0, H - 2);
-    } else if (mode == MODE_LIST) {
+    } else {
         if (sel < scroll_top) scroll_top = sel;
         if (sel >= scroll_top + rows) scroll_top = sel - rows + 1;
         if (scroll_top < 0) scroll_top = 0;
 
         int show_sec = cw >= 30, show_tag = cw >= 50;
-        int bars_x = xr - 4, sec_x = 0, tag_x = 0, edge = bars_x;
-        if (show_sec) { edge -= 7; sec_x = edge; }
+        int mw = cw >= 40 ? 8 : 4;
+        int bars_x = xr - mw, sec_x = 0, tag_x = 0, edge = bars_x;
+        if (show_sec) { edge -= 10; sec_x = edge; }
         if (show_tag) { edge -= 14; tag_x = edge; }
         int namew = edge - 1 - (mx + 1);
         if (namew < 4) namew = 4;
@@ -1685,7 +1768,11 @@ static void draw(void)
         if (nnets == 0) {
             const char *empty = backend_down ? "iwd is not running. Waiting for it to come back\u2026"
                                              : "No networks found. Press s to scan.";
-            put(mx, top, backend_down ? COL_YELLOW : COL_LBLACK, COL_BG, empty, cw);
+            put(mx + 1, top, backend_down ? COL_YELLOW : COL_LBLACK, COL_TILE, empty, cw - 2);
+        } else {
+            put(mx + 1, 3, COL_LBLACK, COL_TILE, "network", namew);
+            if (show_sec) put(sec_x, 3, COL_LBLACK, COL_TILE, "security", 8);
+            put(bars_x, 3, COL_LWHITE | TB_BOLD, COL_TILE, mw >= 8 ? "signal" : "sig", mw);
         }
 
         for (int r = 0; r < rows && scroll_top + r < nnets; r++) {
@@ -1693,38 +1780,36 @@ static void draw(void)
             struct net *n = &nets[i];
             int y = top + r;
             int on = (i == sel);
-            uintattr_t bg = on ? COL_BLACK : COL_BG;
+            uintattr_t bg = on ? COL_SEL : COL_TILE;
             if (on) fill(mx - 1, y, cw + 2, COL_FG, bg);
             const char *issue = n->connected ? inet_issue_label() : NULL;
-            uintattr_t nfg = n->connected ? ((issue ? COL_YELLOW : COL_GREEN) | TB_BOLD)
-                           : on ? (COL_LWHITE | TB_BOLD) : COL_FG;
+            uintattr_t nfg = n->connected ? ((issue ? COL_YELLOW : COL_ACCENT) | (on ? TB_BOLD : 0))
+                           : on ? (COL_LWHITE | TB_BOLD) : COL_WHITE;
             put(mx + 1, y, nfg, bg, n->name, namew);
 
             if (show_tag && n->connected && issue) put(tag_x, y, COL_YELLOW, bg, issue, 12);
-            else if (show_tag && n->connected) put(tag_x, y, COL_GREEN, bg, "connected", 9);
-            else if (show_tag && n->known) put(tag_x, y, COL_CYAN, bg, "saved", 5);
+            else if (show_tag && n->connected) put(tag_x, y, COL_ACCENT, bg, "connected", 9);
+            else if (show_tag && n->known) put(tag_x, y, COL_LBLACK, bg, "saved", 5);
             if (show_sec) {
                 int open = !strcmp(n->security, "open");
                 put(sec_x, y, open ? COL_YELLOW : COL_LBLACK, bg, n->security, 5);
             }
-            for (int b = 0; b < 4; b++) {
-                static const char *glyph[] = {"▂", "▄", "▆", "█"};
-                int lit = b < n->bars;
-                uintattr_t fg = lit ? (n->bars >= 3 ? COL_GREEN : n->bars == 2 ? COL_YELLOW : COL_RED) : COL_LBLACK;
-                put(bars_x + b, y, fg, bg, lit ? glyph[b] : "▁", 1);
-            }
+            int lit = mw >= 8 ? n->bars * 2 : n->bars;
+            uintattr_t mfg = n->connected ? COL_ACCENT : COL_WHITE;
+            for (int b = 0; b < mw; b++)
+                put(bars_x + b, y, b < lit ? mfg : (on ? COL_TRACK_SEL : COL_RULE), bg, "━", 1);
         }
     }
 
     int by = H - 1;
     if (status[0]) {
         static const char *spin[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
-        uintattr_t fg = status_is_error ? COL_RED : COL_WHITE;
+        uintattr_t fg = status_is_error ? COL_ACCENT : COL_WHITE;
         int w = text_width(status) + (busy_active ? 2 : 0);
         if (w > cw) w = cw;
         int sx = (W - w) / 2;
         if (busy_active) {
-            put(sx, by, COL_YELLOW, COL_BG, spin[spin_frame % 10], 1);
+            put(sx, by, COL_ACCENT, COL_BG, spin[spin_frame % 10], 1);
             put(sx + 2, by, fg, COL_BG, status, w - 2);
         } else {
             put(sx, by, fg, COL_BG, status, w);
@@ -1755,7 +1840,7 @@ static void draw(void)
         int fx = (W - total) / 2;
         for (int i = 0; i < fit; i++) {
             if (i) fx += 3;
-            fx += put(fx, by, COL_FG, COL_BG, hints[i].key, cw);
+            fx += put(fx, by, COL_LWHITE | TB_BOLD, COL_BG, hints[i].key, cw);
             fx += 1;
             fx += put(fx, by, COL_LBLACK, COL_BG, hints[i].label, cw);
         }
@@ -1763,29 +1848,29 @@ static void draw(void)
 
     if (mode == MODE_PASS) {
         char title[128];
-        snprintf(title, sizeof title, pending_qr ? "Share %s" : "%s", pending_name);
-        const char *label = pending_hidden ? "Wi-Fi password (empty if open)" : "Wi-Fi password";
+        snprintf(title, sizeof title, pending_qr ? "share %s" : "%s", pending_name);
+        const char *label = pending_hidden ? "wi-fi password (empty if open)" : "wi-fi password";
         char hint[96];
         uintattr_t label_fg = COL_CYAN;
         char plabel[40];
         if (pending_sudo) {
-            snprintf(plabel, sizeof plabel, "Your %s password", priv_name());
+            snprintf(plabel, sizeof plabel, "your %s password", priv_name());
             label = plabel;
             label_fg = COL_YELLOW;
         }
 
         if (pending_qr && (pending_sudo || *priv_name()))
-            snprintf(hint, sizeof hint, "%s   Ctrl-W  %s password   esc cancel", reveal ? "tab hide" : "tab show",
-                     pending_sudo ? "Wi-Fi" : priv_name());
+            snprintf(hint, sizeof hint, "%s   ctrl+w  %s password   esc cancel", reveal ? "tab hide" : "tab show",
+                     pending_sudo ? "wi-fi" : priv_name());
         else
             snprintf(hint, sizeof hint, "\u21b5 ok   %s   esc cancel", reveal ? "tab hide" : "tab show");
         draw_modal(title, label, hint, input, 1, label_fg);
     } else if (mode == MODE_HIDDEN_NAME) {
-        draw_modal("Hidden network", "Network name", "\u21b5 continue   esc cancel", input, 0, COL_CYAN);
+        draw_modal("hidden network", "network name", "\u21b5 continue   esc cancel", input, 0, COL_CYAN);
     } else if (mode == MODE_CONFIRM_FORGET) {
         char title[96];
-        snprintf(title, sizeof title, "Forget %s?", pending_name);
-        draw_modal(title, NULL, "y forget   any other key cancels", NULL, 0, COL_FG);
+        snprintf(title, sizeof title, "forget %s?", pending_name);
+        draw_modal(title, NULL, "y forget   esc cancel", NULL, 0, COL_FG);
     }
     tb_present();
 }
