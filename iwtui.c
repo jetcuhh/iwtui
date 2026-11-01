@@ -33,12 +33,7 @@
 #define COL_BG       0x101318
 #define COL_FG       0xEAEFF5
 #define COL_CURSOR   "#EAEFF5"
-#define COL_CURSOR_RGB 0xEAEFF5
-#define COL_BLACK    0x222733
-#define COL_RED      0xE37B66
-#define COL_GREEN    0x8DA882
 #define COL_YELLOW   0xE0A568
-#define COL_CYAN     0x809D9E
 #define COL_WHITE    0xC6CED8
 #define COL_LBLACK   0x98A0AE
 #define COL_LWHITE   0xEAEFF5
@@ -56,7 +51,6 @@
 #define NAME_MAX_LEN 64
 #define OUT_MAX (256 * 1024)
 #define REFRESH_MS 4000
-#define MAX_CONTENT_W 72
 /* kill a stuck command after this many ms */
 #define CMD_TIMEOUT_MS 30000
 #define REFRESH_TIMEOUT_MS 8000
@@ -1589,9 +1583,8 @@ static int draw_hint(int x, int y, int maxw, const char *hint, uintattr_t bg)
 }
 
 static void draw_modal(const char *title, const char *label, const char *hint,
-                       const char *text, int mask, uintattr_t label_fg)
+                       const char *text, int mask)
 {
-    (void)label_fg;
     int W = tb_width(), H = tb_height();
     int bw = W < 54 ? W - 2 : 52;
     if (bw < 16) bw = W;
@@ -1851,12 +1844,10 @@ static void draw(void)
         snprintf(title, sizeof title, pending_qr ? "share %s" : "%s", pending_name);
         const char *label = pending_hidden ? "wi-fi password (empty if open)" : "wi-fi password";
         char hint[96];
-        uintattr_t label_fg = COL_CYAN;
         char plabel[40];
         if (pending_sudo) {
             snprintf(plabel, sizeof plabel, "your %s password", priv_name());
             label = plabel;
-            label_fg = COL_YELLOW;
         }
 
         if (pending_qr && (pending_sudo || *priv_name()))
@@ -1864,13 +1855,13 @@ static void draw(void)
                      pending_sudo ? "wi-fi" : priv_name());
         else
             snprintf(hint, sizeof hint, "\u21b5 ok   %s   esc cancel", reveal ? "tab hide" : "tab show");
-        draw_modal(title, label, hint, input, 1, label_fg);
+        draw_modal(title, label, hint, input, 1);
     } else if (mode == MODE_HIDDEN_NAME) {
-        draw_modal("hidden network", "network name", "\u21b5 continue   esc cancel", input, 0, COL_CYAN);
+        draw_modal("hidden network", "network name", "\u21b5 continue   esc cancel", input, 0);
     } else if (mode == MODE_CONFIRM_FORGET) {
         char title[96];
         snprintf(title, sizeof title, "forget %s?", pending_name);
-        draw_modal(title, NULL, "y forget   esc cancel", NULL, 0, COL_FG);
+        draw_modal(title, NULL, "y forget   esc cancel", NULL, 0);
     }
     tb_present();
 }
