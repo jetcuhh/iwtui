@@ -62,6 +62,7 @@ struct net {
     int bars;
     int connected;
     int known;
+    int offline;
 };
 
 static struct net nets[MAX_NETS];
@@ -497,10 +498,14 @@ static void parse_network(const char *plain, const char *raw, void *ud)
     nnets++;
 }
 
+static int is_known_security(const char *s)
+{
+    return !strcmp(s, "psk") || !strcmp(s, "open") || !strcmp(s, "8021x") || !strcmp(s, "wep");
+}
+
 static void parse_known(const char *plain, const char *raw, void *ud)
 {
     (void)raw;
-    (void)ud;
     const char *p = plain;
     while (*p == ' ') p++;
 
@@ -511,9 +516,30 @@ static void parse_known(const char *plain, const char *raw, void *ud)
             best = l;
         }
     }
-    if (!best) return;
-    for (int i = 0; i < nnets; i++)
-        if (strlen(nets[i].name) == best && !strncmp(p, nets[i].name, best)) nets[i].known = 1;
+    if (best) {
+        for (int i = 0; i < nnets; i++)
+            if (strlen(nets[i].name) == best && !strncmp(p, nets[i].name, best)) nets[i].known = 1;
+        return;
+    }
+
+    if (!ud || nnets >= MAX_NETS) return;
+    char name[NAME_MAX_LEN], sec[16];
+    const char *rest;
+    first_column(p, name, sizeof name, &rest);
+    size_t sl = 0;
+    while (rest[sl] && rest[sl] != ' ' && sl + 1 < sizeof sec) {
+        sec[sl] = rest[sl];
+        sl++;
+    }
+    sec[sl] = 0;
+
+    if (!name[0] || !is_known_security(sec)) return;
+    struct net *n = &nets[nnets++];
+    memset(n, 0, sizeof *n);
+    snprintf(n->name, sizeof n->name, "%s", name);
+    snprintf(n->security, sizeof n->security, "%s", sec);
+    n->known = 1;
+    n->offline = 1;
 }
 
 static void parse_station_list(const char *plain, const char *raw, void *ud)
@@ -916,8 +942,10 @@ static void refresh(void)
     /* parse only successful commands; failures print error text */
     if (rcs[0] == 0 && outs[0]) parse_show(outs[0]);
     nnets = 0;
-    if (rcs[1] == 0 && outs[1]) each_row(outs[1], parse_network, NULL);
-    if (rcs[2] == 0 && outs[2]) each_row(outs[2], parse_known, NULL);
+    int scan_ok = rcs[1] == 0 && outs[1];
+    int add_missing = 1;
+    if (scan_ok) each_row(outs[1], parse_network, NULL);
+    if (rcs[2] == 0 && outs[2]) each_row(outs[2], parse_known, scan_ok ? &add_missing : NULL);
     for (int i = 0; i < 3; i++) {
         if (rcs[i] != 0 && !err[0] && outs[i]) first_line(outs[i], err, sizeof err);
         free(outs[i]);
@@ -1039,6 +1067,9 @@ static unsigned char qr_m[QR_MAXN][QR_MAXN];
 static unsigned char qr_fn[QR_MAXN][QR_MAXN];
 static int qr_n;
 static char qr_name[NAME_MAX_LEN];
+static char qr_pass[128];
+static int qr_reveal;
+static int qr_text_ok;
 
 static void qr_clear(void)
 {
@@ -1483,6 +1514,9 @@ static void show_qr(const char *ssid, const char *security, const char *pass)
         return;
     }
     snprintf(qr_name, sizeof qr_name, "%s", ssid);
+    if (strcmp(type, "nopass") && pass && *pass) snprintf(qr_pass, sizeof qr_pass, "%s", pass);
+    else qr_pass[0] = 0;
+    qr_reveal = 0;
     status[0] = 0;
     status_until = 0;
     status_is_backend = 0;
@@ -1646,28 +1680,89 @@ static double qr_stretch(void)
     return f;
 }
 
-static void draw_qr(int top, int avail)
+#define QR_INFO_ROWS 2
+#define QR_LABEL_W 10
+
+static void put_fit(int x, int y, uintattr_t fg, uintattr_t bg, const char *s, int maxw)
+{
+    if (text_width(s) <= maxw) {
+        put(x, y, fg, bg, s, maxw);
+        return;
+    }
+    int used = put(x, y, fg, bg, s, maxw - 1);
+    put(x + used, y, fg, bg, "…", 1);
+}
+
+static void draw_qr_info(int y)
 {
     int W = tb_width();
-    double f = qr_stretch();
-    int q = 3, total = qr_n + 2 * q, prow = (total + 1) / 2, cols = (int)(total * f + 0.999);
-    if (prow > avail || cols > W) {
+    int open = !qr_pass[0];
+    char mask[sizeof qr_pass];
+    const char *pv = qr_pass;
+    mask[0] = 0;
+    if (open) {
+        pv = "none (open network)";
+    } else if (!qr_reveal) {
+        size_t m = 0;
+        for (const char *s = qr_pass; *s && m + 1 < sizeof mask; s++)
+            if (((unsigned char)*s & 0xC0) != 0x80) mask[m++] = '*';
+        mask[m] = 0;
+        pv = mask;
+    }
+
+    int room = W - 2;
+    int nw = text_width(qr_name);
+    int pw = text_width(pv);
+    int vw = nw > pw ? nw : pw;
+    uintattr_t pfg = open ? COL_LBLACK : qr_reveal ? (COL_LWHITE | TB_BOLD) : COL_WHITE;
+
+    if (QR_LABEL_W + vw <= room) {
+        int x = (W - (QR_LABEL_W + vw)) / 2;
+        put(x, y, COL_LBLACK, COL_BG, "network", QR_LABEL_W);
+        put(x + QR_LABEL_W, y, COL_LWHITE | TB_BOLD, COL_BG, qr_name, vw);
+        put(x, y + 1, COL_LBLACK, COL_BG, "password", QR_LABEL_W);
+        put(x + QR_LABEL_W, y + 1, pfg, COL_BG, pv, vw);
+    } else {
+        int w1 = nw < room ? nw : room, w2 = pw < room ? pw : room;
+        put_fit((W - w1) / 2, y, COL_LWHITE | TB_BOLD, COL_BG, qr_name, w1);
+        put_fit((W - w2) / 2, y + 1, pfg, COL_BG, pv, w2);
+    }
+    wipe(mask, sizeof mask);
+}
+
+static int draw_qr(int top, int avail)
+{
+    int W = tb_width();
+    double f0 = qr_stretch(), f = f0;
+    int q = 3, total = 0, prow = 0, cols = 0, room = avail, text = 0, found = 0;
+
+    for (int with_text = 1; with_text >= 0 && !found; with_text--) {
+        room = with_text ? avail : avail - 1;
+        for (int step = 0; step < 3 && !found; step++) {
+            q = step == 0 ? 3 : 2;
+            f = step == 2 ? 1.0 : f0;
+            total = qr_n + 2 * q;
+            prow = (total + 1) / 2;
+            cols = (int)(total * f + 0.999);
+            if (prow + (with_text ? QR_INFO_ROWS : 0) <= room && cols <= W) {
+                found = 1;
+                text = with_text;
+            }
+        }
+    }
+    if (!found) {
+        char msg[96];
         q = 2;
         total = qr_n + 2 * q;
         prow = (total + 1) / 2;
-        cols = (int)(total * f + 0.999);
-    }
-    if (prow > avail || cols > W) {
-        f = 1.0;
-        cols = total;
-    }
-    if (prow > avail || cols > W) {
-        char msg[96];
-        snprintf(msg, sizeof msg, "terminal too small for the QR code (need %dx%d)", cols, prow + 2);
+        snprintf(msg, sizeof msg, "terminal too small for the QR code (need %dx%d)", total, prow + 2);
         put_centered(top + avail / 2, COL_ACCENT, COL_BG, msg, W - 2);
-        return;
+        return 0;
     }
-    int x0 = (W - cols) / 2, y0 = top + (avail - prow) / 2;
+
+    int gap = (text && room - prow - QR_INFO_ROWS >= 4) ? 1 : 0;
+    int block = prow + (text ? gap + QR_INFO_ROWS : 0);
+    int x0 = (W - cols) / 2, y0 = top + (room - block) / 2;
     for (int r = 0; r < prow; r++)
         for (int c = 0; c < cols; c++) {
             int m = (int)((c + 0.5) / f);
@@ -1676,6 +1771,8 @@ static void draw_qr(int top, int avail)
             uintattr_t dn = qr_dark(m - q, 2 * r + 1 - q) ? COL_BG : COL_LWHITE;
             tb_set_cell(x0 + c, y0 + r, 0x2580, up, dn);
         }
+    if (text) draw_qr_info(y0 + prow + gap);
+    return text;
 }
 
 static const char *inet_issue_label(void)
@@ -1744,7 +1841,7 @@ static void draw(void)
     list_rows = rows;
 
     if (mode == MODE_QR) {
-        draw_qr(0, H - 2);
+        qr_text_ok = draw_qr(0, H - 1);
     } else {
         if (sel < scroll_top) scroll_top = sel;
         if (sel >= scroll_top + rows) scroll_top = sel - rows + 1;
@@ -1777,11 +1874,13 @@ static void draw(void)
             if (on) fill(mx - 1, y, cw + 2, COL_FG, bg);
             const char *issue = n->connected ? inet_issue_label() : NULL;
             uintattr_t nfg = n->connected ? ((issue ? COL_YELLOW : COL_ACCENT) | (on ? TB_BOLD : 0))
-                           : on ? (COL_LWHITE | TB_BOLD) : COL_WHITE;
+                           : on ? (COL_LWHITE | TB_BOLD)
+                           : n->offline ? COL_LBLACK : COL_WHITE;
             put(mx + 1, y, nfg, bg, n->name, namew);
 
             if (show_tag && n->connected && issue) put(tag_x, y, COL_YELLOW, bg, issue, 12);
             else if (show_tag && n->connected) put(tag_x, y, COL_ACCENT, bg, "connected", 9);
+            else if (show_tag && n->offline) put(tag_x, y, COL_LBLACK, bg, "not in range", 12);
             else if (show_tag && n->known) put(tag_x, y, COL_LBLACK, bg, "saved", 5);
             if (show_sec) {
                 int open = !strcmp(n->security, "open");
@@ -1809,7 +1908,12 @@ static void draw(void)
         }
     } else if (mode == MODE_QR) {
         char msg[160];
-        snprintf(msg, sizeof msg, "scan to join %s   ·   any key to close", qr_name);
+        if (qr_text_ok && qr_pass[0])
+            snprintf(msg, sizeof msg, "tab %s password   ·   any other key to close", qr_reveal ? "hide" : "show");
+        else if (qr_text_ok)
+            snprintf(msg, sizeof msg, "scan to join   ·   any key to close");
+        else
+            snprintf(msg, sizeof msg, "scan to join %s   ·   any key to close", qr_name);
         put_centered(by, COL_LBLACK, COL_BG, msg, cw);
     } else if (mode == MODE_LIST) {
         struct { const char *key, *label; } hints[10];
@@ -2127,8 +2231,15 @@ int main(int argc, char **argv)
                     mode = MODE_PASS;
                 }
             } else if (mode == MODE_QR) {
-                mode = MODE_LIST;
-                qr_clear();
+                if (ev.key == TB_KEY_TAB && qr_text_ok && qr_pass[0]) {
+                    qr_reveal = !qr_reveal;
+                } else {
+                    mode = MODE_LIST;
+                    qr_clear();
+                    wipe(qr_pass, sizeof qr_pass);
+                    qr_reveal = 0;
+                    qr_text_ok = 0;
+                }
             } else if (mode == MODE_CONFIRM_FORGET) {
                 mode = MODE_LIST;
                 if (ev.ch == 'y') {
